@@ -141,7 +141,18 @@
   }
   
   // Create connection
-  _captureConnection = [AVCaptureConnection connectionWithInputPorts:_captureVideoInput.ports
+  //
+  // FORK: only the video port goes into the preview connection. A virtual device's
+  // input can expose more than one port, and a non-video port in this array would
+  // make -addConnection: reject the whole connection. The physical wide camera only
+  // ever had the one video port, so this is a no-op for the upstream path.
+  NSMutableArray<AVCaptureInputPort *> *videoPorts = [NSMutableArray new];
+  for (AVCaptureInputPort *port in _captureVideoInput.ports) {
+    if ([port.mediaType isEqualToString:AVMediaTypeVideo]) {
+      [videoPorts addObject:port];
+    }
+  }
+  _captureConnection = [AVCaptureConnection connectionWithInputPorts:(videoPorts.count > 0 ? videoPorts : _captureVideoInput.ports)
                                                               output:_captureVideoOutput];
   
   // TODO: works but deprecated...
@@ -229,6 +240,10 @@
   _currentPreviewSize = [CameraQualities getSizeForPreset:_currentPreset];
 
   [_videoController setPreviewSize:_currentPreviewSize];
+  
+  // FORK: runs after every preset change (init, sensor switch, preview size), which
+  // is where a virtual device would otherwise sit at the ultra-wide field of view.
+  [self applyDefaultVideoZoomFactor];
 }
 
 /// Get current video prewiew size
@@ -327,9 +342,17 @@
 }
 
 /// Set zoom level
+///
+/// FORK: normalised 0 maps to the default framing rather than to a zoom factor of
+/// 1.0. On a virtual device 1.0 is the ultra-wide field of view, which upstream
+/// never showed, so Dart callers keep the same meaning for 0 ("no zoom"). The
+/// result is clamped to what the device accepts, which avoids the range exception
+/// AVFoundation throws for out-of-range factors.
 - (void)setZoom:(float)value error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   CGFloat maxZoom = [self getMaxZoom];
-  CGFloat scaledZoom = value * (maxZoom - 1.0f) + 1.0f;
+  CGFloat minZoom = [self defaultVideoZoomFactor];
+  CGFloat scaledZoom = value * (maxZoom - minZoom) + minZoom;
+  scaledZoom = MAX(_captureDevice.minAvailableVideoZoomFactor, MIN(scaledZoom, _captureDevice.maxAvailableVideoZoomFactor));
   
   NSError *zoomError;
   if ([_captureDevice lockForConfiguration:&zoomError]) {
@@ -437,26 +460,91 @@
 }
 
 /// Get the first available camera on device (front or rear)
+///
+/// FORK (see FORK.md): the rear camera prefers Apple's virtual multi-camera devices
+/// that contain the ultra-wide camera. Only those switch to the ultra-wide on their
+/// own when the subject is closer than the wide camera's minimum focus distance
+/// (Apple's "macro" behaviour); the physical wide-angle camera upstream opened can
+/// never change lens, so close-ups stayed out of focus. Devices without such a
+/// virtual camera fall back to the physical wide-angle camera as before.
 - (NSString *)selectAvailableCamera:(PigeonSensorPosition)sensor {
   if (_captureDeviceId != nil) {
     return _captureDeviceId;
   }
   
-  // TODO: add dual & triple camera
-  NSArray<AVCaptureDevice *> *devices = [[NSArray alloc] init];
-  AVCaptureDeviceDiscoverySession *discoverySession = [AVCaptureDeviceDiscoverySession
-                                                       discoverySessionWithDeviceTypes:@[ AVCaptureDeviceTypeBuiltInWideAngleCamera, ]
-                                                       mediaType:AVMediaTypeVideo
-                                                       position:AVCaptureDevicePositionUnspecified];
-  devices = discoverySession.devices;
+  AVCaptureDevicePosition position = (sensor == PigeonSensorPositionFront) ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
   
-  NSInteger cameraType = (sensor == PigeonSensorPositionFront) ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
-  for (AVCaptureDevice *device in devices) {
-    if ([device position] == cameraType) {
+  NSMutableArray<AVCaptureDeviceType> *deviceTypes = [NSMutableArray new];
+  if (position == AVCaptureDevicePositionBack) {
+    if (@available(iOS 13.0, *)) {
+      // Ordered by preference. builtInDualCamera (wide + telephoto) is left out on
+      // purpose: it has no ultra-wide, so it cannot help with close focus.
+      [deviceTypes addObject:AVCaptureDeviceTypeBuiltInTripleCamera];
+      [deviceTypes addObject:AVCaptureDeviceTypeBuiltInDualWideCamera];
+    }
+  }
+  [deviceTypes addObject:AVCaptureDeviceTypeBuiltInWideAngleCamera];
+  
+  for (AVCaptureDeviceType deviceType in deviceTypes) {
+    AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithDeviceType:deviceType
+                                                                 mediaType:AVMediaTypeVideo
+                                                                  position:position];
+    if (device != nil) {
       return [device uniqueID];
     }
   }
   return nil;
+}
+
+/// FORK: zoom factor that reproduces the physical wide-angle camera's framing at 1x.
+///
+/// On a virtual device `videoZoomFactor = 1.0` is the ultra-wide camera's full field
+/// of view, and the wide camera takes over at its switch-over factor (normally 2.0).
+/// That switch-over factor is therefore the "no zoom" baseline, so preview and
+/// stills frame exactly as they did with the physical wide camera. Returns 1.0 for
+/// physical devices, or when the wide camera is the shortest lens of the set.
+- (CGFloat)defaultVideoZoomFactor {
+  AVCaptureDevice *device = _captureDevice;
+  if (device == nil) {
+    return 1.0;
+  }
+  if (@available(iOS 13.0, *)) {
+    if (!device.isVirtualDevice) {
+      return 1.0;
+    }
+    NSArray<AVCaptureDevice *> *constituents = device.constituentDevices;
+    NSArray<NSNumber *> *switchOverFactors = device.virtualDeviceSwitchOverVideoZoomFactors;
+    for (NSUInteger i = 0; i < constituents.count; i++) {
+      if (constituents[i].deviceType == AVCaptureDeviceTypeBuiltInWideAngleCamera) {
+        // The factors progress in the same order as the constituent devices, so
+        // switchOverFactors[i - 1] is where constituent i takes over from the
+        // shorter lens before it.
+        if (i > 0 && switchOverFactors.count >= i) {
+          return [switchOverFactors[i - 1] doubleValue];
+        }
+        return 1.0;
+      }
+    }
+  }
+  return 1.0;
+}
+
+/// FORK: moves a freshly configured virtual device from the ultra-wide field of view
+/// to the wide camera's framing. Only ever raises the zoom, so a level the user set
+/// survives a preset change; no-op on physical devices.
+- (void)applyDefaultVideoZoomFactor {
+  CGFloat defaultZoom = [self defaultVideoZoomFactor];
+  if (defaultZoom <= 1.0 || _captureDevice.videoZoomFactor >= defaultZoom) {
+    return;
+  }
+  
+  NSError *lockError;
+  if ([_captureDevice lockForConfiguration:&lockError]) {
+    _captureDevice.videoZoomFactor = MIN(defaultZoom, _captureDevice.activeFormat.videoMaxZoomFactor);
+    [_captureDevice unlockForConfiguration];
+  } else {
+    NSLog(@"camerawesome: could not apply default zoom on virtual device: %@", [lockError localizedDescription]);
+  }
 }
 
 /// Set capture mode between Photo & Video mode
