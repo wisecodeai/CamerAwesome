@@ -8,7 +8,7 @@ Flutter apps as a git dependency pinned to a tag:
 camerawesome:
   git:
     url: https://github.com/wisecodeai/CamerAwesome.git
-    ref: v2.5.0-wisecode.1
+    ref: v2.5.0-wisecode.2
 ```
 
 - **Branch `wisecode`** holds our changes. `master` mirrors upstream.
@@ -30,9 +30,9 @@ equivalent because CameraX opens the OEM's logical camera.
 
 ## Changes from upstream
 
-iOS only; Android and the Dart layer are untouched. All in
-`ios/camerawesome/Sources/camerawesome/CameraPreview/SingleCameraPreview/SingleCameraPreview.m`,
-each marked with a `FORK` comment.
+iOS only; Android and the Dart layer are untouched. Every change is marked with a
+`FORK` comment. Changes 1-4 are in
+`ios/camerawesome/Sources/camerawesome/CameraPreview/SingleCameraPreview/SingleCameraPreview.m`.
 
 1. **Rear camera device selection** (`selectAvailableCamera:`) prefers
    `builtInTripleCamera`, then `builtInDualWideCamera`, then the physical
@@ -60,6 +60,27 @@ each marked with a `FORK` comment.
    no-op for the physical camera, which has one port; a guard for virtual device
    inputs that expose more.
 
+5. **Tap-to-focus point converted into sensor space** (`focusOnPoint:` in both
+   `SingleCameraPreview.m` and `MultiCameraPreview.m`, via the new
+   `Utils/PointOfInterest/PointOfInterestUtils`). Upstream assigned the
+   view-normalised tap straight to `focusPointOfInterest`, which AVFoundation
+   defines against the landscape sensor image, so in a portrait app every tap off
+   centre focused on the wrong region (a tap at the top landed on the right edge).
+   The point is now rotated by the device orientation the plugin already tracks,
+   with the same mapping Flutter's `camera_avfoundation` uses, and un-mirrored for
+   the front camera. Face up, face down and unknown orientations are treated as
+   portrait. The same converted point is also applied as `exposurePointOfInterest`
+   with continuous auto exposure, which upstream never set. Focus mode stays
+   continuous, as upstream.
+
+6. **Capture waits for a running autofocus scan** (`takePictureAtPath:` and
+   `capturePhotoWhenFocusSettles:delegate:remaining:` in `SingleCameraPreview.m`).
+   Upstream called `capturePhotoWithSettings:` immediately, so a shutter tap right
+   after moving the phone captured mid-scan. The capture now polls
+   `adjustingFocus` every 20 ms and exposes as soon as it clears, with a hard cap
+   of 300 ms after which it exposes regardless. When focus is already settled the
+   capture is immediate, exactly as before. Multi-camera capture is unchanged.
+
 Behaviour on devices without a macro-capable ultra-wide camera (iPhone 13, 14 and
 15 non-Pro, SE) is identical to upstream apart from the device type: the virtual
 device is opened but the system has no lens to fall back to.
@@ -72,5 +93,5 @@ git checkout master && git merge --ff-only upstream/master && git push origin ma
 git checkout wisecode && git merge upstream/master   # or rebase onto the new release commit
 ```
 
-Re-check the `FORK` blocks in `SingleCameraPreview.m`, update the base and tag
+Re-check the `FORK` blocks in both preview classes and `PointOfInterestUtils`, update the base and tag
 names in this file, tag `v<version>-wisecode.<n>`, and move the apps to it.

@@ -6,6 +6,12 @@
 //
 
 #import "SingleCameraPreview.h"
+#import "PointOfInterestUtils.h"
+
+/// FORK: upper bound on how long a capture waits for a running autofocus scan.
+static const NSTimeInterval kFocusSettleTimeout = 0.3;
+/// FORK: how often the autofocus state is re-checked while waiting.
+static const NSTimeInterval kFocusSettlePollInterval = 0.02;
 
 @implementation SingleCameraPreview {
   dispatch_queue_t _dispatchQueue;
@@ -440,6 +446,15 @@
 /// Trigger focus on device at the specific point of the preview
 - (void)focusOnPoint:(CGPoint)position preview:(CGSize)preview error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   NSError *lockError;
+  
+  // FORK: `position` is normalised against the preview the user sees, but the
+  // point of interest is in sensor space. Upstream assigned it unchanged, so in a
+  // portrait app every tap off centre focused on the wrong part of the frame (a
+  // tap at the top landed on the right edge).
+  CGPoint devicePoint = [PointOfInterestUtils devicePointForViewPoint:position
+                                                          orientation:_motionController.deviceOrientation
+                                                             mirrored:_captureConnection.isVideoMirrored];
+  
   if ([_captureDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus] && [_captureDevice isFocusPointOfInterestSupported]) {
     if ([_captureDevice lockForConfiguration:&lockError]) {
       if (lockError != nil) {
@@ -447,8 +462,16 @@
         return;
       }
       
-      [_captureDevice setFocusPointOfInterest:position];
+      [_captureDevice setFocusPointOfInterest:devicePoint];
       [_captureDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+      
+      // FORK: meter where the user is focusing. Upstream never set an exposure
+      // point, so a dark label kept whole-scene metering and stayed low contrast,
+      // which also makes autofocus slower.
+      if ([_captureDevice isExposurePointOfInterestSupported] && [_captureDevice isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
+        [_captureDevice setExposurePointOfInterest:devicePoint];
+        [_captureDevice setExposureMode:AVCaptureExposureModeContinuousAutoExposure];
+      }
       
       [_captureDevice unlockForConfiguration];
     }
@@ -598,9 +621,26 @@
   [settings setFlashMode:_flashMode];
   [settings setHighResolutionPhotoEnabled:YES];
   
-  [_capturePhotoOutput capturePhotoWithSettings:settings
-                                       delegate:cameraPicture];
+  // FORK: let a running autofocus scan finish before exposing. Upstream exposed
+  // immediately, so a shutter tap right after moving the phone in captured the
+  // frame mid-scan. The wait is bounded and skipped when focus is already settled.
+  [self capturePhotoWhenFocusSettles:settings delegate:cameraPicture remaining:kFocusSettleTimeout];
+}
+
+/// FORK: captures once the device reports it is no longer adjusting focus, or
+/// once `remaining` runs out, whichever comes first. Polls on the main queue at
+/// `kFocusSettlePollInterval`; the capture itself is unchanged from upstream.
+- (void)capturePhotoWhenFocusSettles:(AVCapturePhotoSettings *)settings
+                            delegate:(CameraPictureController *)delegate
+                           remaining:(NSTimeInterval)remaining {
+  if (![_captureDevice isAdjustingFocus] || remaining <= 0) {
+    [_capturePhotoOutput capturePhotoWithSettings:settings delegate:delegate];
+    return;
+  }
   
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kFocusSettlePollInterval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    [self capturePhotoWhenFocusSettles:settings delegate:delegate remaining:remaining - kFocusSettlePollInterval];
+  });
 }
 
 # pragma mark - Camera video

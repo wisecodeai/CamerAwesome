@@ -6,6 +6,7 @@
 //
 
 #import "MultiCameraPreview.h"
+#import "PointOfInterestUtils.h"
 
 @implementation MultiCameraPreview
 
@@ -101,6 +102,12 @@
 - (void)focusOnPoint:(CGPoint)position preview:(CGSize)preview error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
   AVCaptureDevice *mainDevice = self.devices.firstObject.device;
   NSError *lockError;
+  
+  // FORK: same view-to-sensor conversion as SingleCameraPreview; see there.
+  CGPoint devicePoint = [PointOfInterestUtils devicePointForViewPoint:position
+                                                          orientation:_motionController.deviceOrientation
+                                                             mirrored:mainDevice.position == AVCaptureDevicePositionFront];
+  
   if ([mainDevice isFocusModeSupported:AVCaptureFocusModeAutoFocus] && [mainDevice isFocusPointOfInterestSupported]) {
     if ([mainDevice lockForConfiguration:&lockError]) {
       if (lockError != nil) {
@@ -108,8 +115,14 @@
         return;
       }
       
-      [mainDevice setFocusPointOfInterest:position];
+      [mainDevice setFocusPointOfInterest:devicePoint];
       [mainDevice setFocusMode:AVCaptureFocusModeContinuousAutoFocus];
+      
+      // FORK: meter at the same point; see SingleCameraPreview.
+      if ([mainDevice isExposurePointOfInterestSupported] && [mainDevice isExposureModeSupported:AVCaptureExposureModeContinuousAutoExposure]) {
+        [mainDevice setExposurePointOfInterest:devicePoint];
+        [mainDevice setExposureMode:AVCaptureExposureModeContinuousAutoExposure];
+      }
       
       [mainDevice unlockForConfiguration];
     }
