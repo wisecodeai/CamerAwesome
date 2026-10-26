@@ -73,11 +73,22 @@ class CamerawesomePlugin {
     return res;
   }
 
-  static Future<bool> stop() async {
-    if (currentState == CameraRunningState.stopped ||
-        currentState == CameraRunningState.stopping) {
-      return true;
+  static Future<bool>? _stopping;
+
+  /// Stops the camera. The returned future completes once the native session
+  /// has stopped (on iOS; Android unbinds synchronously), so another capture
+  /// stack can open the device straight after.
+  ///
+  /// FORK: a call made while a stop is in flight returns that stop. Upstream
+  /// returned `true` at once, so only the first caller could wait for it.
+  static Future<bool> stop() {
+    if (currentState == CameraRunningState.stopped) {
+      return Future.value(true);
     }
+    return _stopping ??= _stop().whenComplete(() => _stopping = null);
+  }
+
+  static Future<bool> _stop() async {
     _orientationStream = null;
     currentState = CameraRunningState.stopping;
     bool res;
@@ -86,7 +97,11 @@ class CamerawesomePlugin {
     } catch (e) {
       return false;
     }
-    currentState = CameraRunningState.stopped;
+    // FORK: a start() issued while the stop was in flight (a new preview
+    // mounting) owns the state now; don't mark that camera stopped.
+    if (currentState == CameraRunningState.stopping) {
+      currentState = CameraRunningState.stopped;
+    }
     return res;
   }
 

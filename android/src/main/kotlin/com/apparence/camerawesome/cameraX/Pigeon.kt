@@ -776,7 +776,7 @@ interface CameraInterface {
   fun getFrontSensors(): List<PigeonSensorTypeDevice>
   fun getBackSensors(): List<PigeonSensorTypeDevice>
   fun start(): Boolean
-  fun stop(): Boolean
+  fun stop(callback: (Result<Boolean>) -> Unit)
   fun setFlashMode(mode: String)
   fun handleAutoFocus()
   /**
@@ -1063,13 +1063,15 @@ interface CameraInterface {
         val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.CameraInterface.stop", codec)
         if (api != null) {
           channel.setMessageHandler { _, reply ->
-            var wrapped: List<Any?>
-            try {
-              wrapped = listOf<Any?>(api.stop())
-            } catch (exception: Throwable) {
-              wrapped = wrapError(exception)
+            api.stop() { result: Result<Boolean> ->
+              val error = result.exceptionOrNull()
+              if (error != null) {
+                reply.reply(wrapError(error))
+              } else {
+                val data = result.getOrNull()
+                reply.reply(wrapResult(data))
+              }
             }
-            reply.reply(wrapped)
           }
         } else {
           channel.setMessageHandler(null)

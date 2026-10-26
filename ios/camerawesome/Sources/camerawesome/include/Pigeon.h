@@ -288,8 +288,7 @@ NSObject<FlutterMessageCodec> *CameraInterfaceGetCodec(void);
 - (nullable NSArray<PigeonSensorTypeDevice *> *)getBackSensorsWithError:(FlutterError *_Nullable *_Nonnull)error;
 /// @return `nil` only when `error != nil`.
 - (nullable NSNumber *)startWithError:(FlutterError *_Nullable *_Nonnull)error;
-/// @return `nil` only when `error != nil`.
-- (nullable NSNumber *)stopWithError:(FlutterError *_Nullable *_Nonnull)error;
+- (void)stopWithCompletion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion;
 - (void)setFlashModeMode:(NSString *)mode error:(FlutterError *_Nullable *_Nonnull)error;
 - (void)handleAutoFocusWithError:(FlutterError *_Nullable *_Nonnull)error;
 /// Starts auto focus on a point at ([x], [y]).

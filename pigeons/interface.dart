@@ -367,6 +367,8 @@ abstract class CameraInterface {
 
   bool start();
 
+  // FORK: async so the reply waits for the native session to stop.
+  @async
   bool stop();
 
   void setFlashMode(String mode);

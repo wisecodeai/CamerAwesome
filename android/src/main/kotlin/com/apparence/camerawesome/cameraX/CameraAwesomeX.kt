@@ -573,10 +573,12 @@ class CameraAwesomeX : CameraInterface, FlutterPlugin, ActivityAware {
         return true
     }
 
-    override fun stop(): Boolean {
+    // FORK: async to match the iOS stop, which waits for the session. CameraX
+    // unbinds synchronously here, so the reply is immediate as before.
+    override fun stop(callback: (Result<Boolean>) -> Unit) {
         orientationStreamListener?.stop()
         cameraState.stop()
-        return true
+        callback(Result.success(true))
     }
 
     @SuppressLint("RestrictedApi")

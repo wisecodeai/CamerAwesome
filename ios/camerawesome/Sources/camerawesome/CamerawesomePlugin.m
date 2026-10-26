@@ -165,24 +165,30 @@ FlutterEventSink physicalButtonEventSink;
   return @(YES);
 }
 
-- (nullable NSNumber *)stopWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+// FORK: replies only once the session has stopped running (stopRunning blocks
+// until it has), so Dart can hand the camera to another capture stack, such as a
+// barcode scanner, without guessing how long the stop takes. Upstream replied
+// before the stop was even dispatched, and dispatched one stop per texture.
+- (void)stopWithCompletion:(void (^)(NSNumber *_Nullable, FlutterError *_Nullable))completion {
   if (self.camera == nil && self.multiCamera == nil) {
-    *error = [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil];
-    return @(NO);
+    completion(nil, [FlutterError errorWithCode:@"CAMERA_MUST_BE_INIT" message:@"init must be call before start" details:nil]);
+    return;
   }
   
   for (NSNumber *textureId in self->_texturesIds) {
     [self->_textureRegistry unregisterTexture:[textureId longLongValue]];
-    dispatch_async(_dispatchQueue, ^{
-      if (self.multiCamera != nil) {
-        [self->_multiCamera stop];
-      } else {
-        [self->_camera stop];
-      }
-    });
   }
   
-  return @(YES);
+  dispatch_async(_dispatchQueue, ^{
+    if (self.multiCamera != nil) {
+      [self->_multiCamera stop];
+    } else {
+      [self->_camera stop];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(@(YES), nil);
+    });
+  });
 }
 
 - (void)refreshWithError:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {

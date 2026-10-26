@@ -8,7 +8,7 @@ Flutter apps as a git dependency pinned to a tag:
 camerawesome:
   git:
     url: https://github.com/wisecodeai/CamerAwesome.git
-    ref: v2.5.0-wisecode.2
+    ref: v2.5.0-wisecode.3
 ```
 
 - **Branch `wisecode`** holds our changes. `master` mirrors upstream.
@@ -30,8 +30,8 @@ equivalent because CameraX opens the OEM's logical camera.
 
 ## Changes from upstream
 
-iOS only; Android and the Dart layer are untouched. Every change is marked with a
-`FORK` comment. Changes 1-4 are in
+Changes 1-6 are iOS only; change 7 touches iOS, the Dart layer and (to keep the
+Pigeon interface in step) Android. Every change is marked with a `FORK` comment. Changes 1-4 are in
 `ios/camerawesome/Sources/camerawesome/CameraPreview/SingleCameraPreview/SingleCameraPreview.m`.
 
 1. **Rear camera device selection** (`selectAvailableCamera:`) prefers
@@ -80,6 +80,27 @@ iOS only; Android and the Dart layer are untouched. Every change is marked with 
    `adjustingFocus` every 20 ms and exposes as soon as it clears, with a hard cap
    of 300 ms after which it exposes regardless. When focus is already settled the
    capture is immediate, exactly as before. Multi-camera capture is unchanged.
+
+7. **`stop()` completes once the camera has stopped.** Upstream's iOS
+   `stopWithError:` replied before the session's `stopRunning` had even been
+   dispatched, and the Dart `CamerawesomePlugin.stop()` returned `true` at once to
+   any caller after the first, so nothing could tell when the device was free.
+   Our apps hand the camera between CameraAwesome and Scandit, and guessed with a
+   fixed delay.
+   - `pigeons/interface.dart` marks `stop` `@async`. The generated files
+     (`Pigeon.h`, `Pigeon.m`, `Pigeon.kt`) were edited by hand to the exact shape
+     Pigeon 9.2.5 emits for an async `bool` method, as `stopRecordingVideo` has,
+     rather than regenerated: the repo's pigeon dev dependency is far newer than
+     the 9.2.5 the files came from, and regenerating would rewrite all of them.
+     The Dart side of a Pigeon host call is the same either way.
+   - iOS (`stopWithCompletion:` in `CamerawesomePlugin.m`) replies on the main
+     queue after `stopRunning` returns, and dispatches one stop instead of one per
+     texture (none when there were no textures).
+   - Android (`CameraAwesomeX.stop`) takes the callback and replies at once, as
+     before: CameraX unbinds synchronously.
+   - Dart (`CamerawesomePlugin.stop`) shares the in-flight stop with every caller,
+     and leaves the state alone if a `start()` came in while the stop was running,
+     so a preview mounting during a slow stop is not marked stopped.
 
 Behaviour on devices without a macro-capable ultra-wide camera (iPhone 13, 14 and
 15 non-Pro, SE) is identical to upstream apart from the device type: the virtual
