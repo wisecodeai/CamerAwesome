@@ -8,7 +8,7 @@ Flutter apps as a git dependency pinned to a tag:
 camerawesome:
   git:
     url: https://github.com/wisecodeai/CamerAwesome.git
-    ref: v2.5.0-wisecode.3
+    ref: v2.5.0-wisecode.4
 ```
 
 - **Branch `wisecode`** holds our changes. `master` mirrors upstream.
@@ -31,7 +31,8 @@ equivalent because CameraX opens the OEM's logical camera.
 ## Changes from upstream
 
 Changes 1-6 are iOS only; change 7 touches iOS, the Dart layer and (to keep the
-Pigeon interface in step) Android. Every change is marked with a `FORK` comment. Changes 1-4 are in
+Pigeon interface in step) Android; change 8 touches iOS and Android. Every change
+is marked with a `FORK` comment. Changes 1-4 are in
 `ios/camerawesome/Sources/camerawesome/CameraPreview/SingleCameraPreview/SingleCameraPreview.m`.
 
 1. **Rear camera device selection** (`selectAvailableCamera:`) prefers
@@ -101,6 +102,21 @@ Pigeon interface in step) Android. Every change is marked with a `FORK` comment.
    - Dart (`CamerawesomePlugin.stop`) shares the in-flight stop with every caller,
      and leaves the state alone if a `start()` came in while the stop was running,
      so a preview mounting during a slow stop is not marked stopped.
+
+8. **Frame tap for a second native consumer** (`CamerawesomeFrameTap`). Lets
+   another plugin read the frames of the running single-camera session, so a
+   barcode SDK (Scandit's `SequenceFrameSource`, through the app's
+   `scandit_camera_bridge` package) shares the camera instead of opening it
+   itself. Nothing changes while no sink is registered.
+   - iOS: `include/CamerawesomeFrameTap.h` and `Controllers/FrameTap/`. The
+     preview delegate in `SingleCameraPreview.m` passes each frame (32BGRA, main
+     queue) and the capture device to `CamerawesomeFrameTap.sink`, held weakly.
+     Multi-camera sessions do not feed it.
+   - Android: `cameraX/CamerawesomeFrameTap.kt`. When a sink is set at the time a
+     single-camera photo session binds its use cases and Dart has not asked for
+     an image stream, `CameraXState` binds an extra `YUV_420_888` `ImageAnalysis`
+     (4:3, about 1920x1440, keep-only-latest) and passes each frame to the sink,
+     then closes it. The sink must therefore be set before the camera starts.
 
 Behaviour on devices without a macro-capable ultra-wide camera (iPhone 13, 14 and
 15 non-Pro, SE) is identical to upstream apart from the device type: the virtual

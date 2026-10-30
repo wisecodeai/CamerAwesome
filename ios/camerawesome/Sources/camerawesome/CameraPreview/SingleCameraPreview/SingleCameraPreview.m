@@ -6,6 +6,7 @@
 //
 
 #import "SingleCameraPreview.h"
+#import "CamerawesomeFrameTap.h"
 #import "PointOfInterestUtils.h"
 
 /// FORK: upper bound on how long a capture waits for a running autofocus scan.
@@ -751,6 +752,12 @@ static const NSTimeInterval kFocusSettlePollInterval = 0.02;
     [self.previewTexture updateBuffer:sampleBuffer];
     if (_onPreviewFrameAvailable) {
       _onPreviewFrameAvailable();
+    }
+
+    // FORK: hand the frame to a native consumer sharing this session.
+    id<CamerawesomeFrameSink> frameSink = CamerawesomeFrameTap.sink;
+    if (frameSink) {
+      [frameSink camerawesomeDidOutputSampleBuffer:sampleBuffer device:_captureDevice];
     }
 
     // Send to image stream controller if enabled

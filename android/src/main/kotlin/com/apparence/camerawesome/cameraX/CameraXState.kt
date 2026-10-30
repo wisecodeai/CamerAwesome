@@ -57,6 +57,9 @@ data class CameraXState(
     var imageAnalysisBuilder: ImageAnalysisBuilder? = null
     private var imageAnalysis: ImageAnalysis? = null
 
+    // FORK: one thread for CamerawesomeFrameTap frames, reused across rebinds.
+    private var frameTapExecutor: java.util.concurrent.ExecutorService? = null
+
     private val mainCameraInfos: CameraInfo
         @SuppressLint("RestrictedApi") get() {
             if (previewCamera == null && concurrentCamera == null) {
@@ -254,6 +257,10 @@ data class CameraXState(
                     useCaseGroupBuilder.addUseCase(imageAnalysis!!)
 
                 }
+            } else if (currentCaptureMode == CaptureModes.PHOTO && CamerawesomeFrameTap.sink != null) {
+                // FORK: feed a native frame consumer sharing this session.
+                imageAnalysis = buildFrameTapAnalysis()
+                useCaseGroupBuilder.addUseCase(imageAnalysis!!)
             } else {
                 imageAnalysis = null
             }
@@ -269,6 +276,37 @@ data class CameraXState(
             )
             previewCamera!!.cameraControl.enableTorch(flashMode == FlashMode.ALWAYS)
         }
+    }
+
+    // FORK: analysis use case for CamerawesomeFrameTap. Preview-sized 4:3 frames
+    // are plenty for barcode recognition and keep the three use cases within
+    // what LIMITED devices can stream at once.
+    private fun buildFrameTapAnalysis(): ImageAnalysis {
+        val analysis = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(1920, 1440),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                        )
+                    )
+                    .build()
+            )
+            .build()
+        val executor = frameTapExecutor
+            ?: java.util.concurrent.Executors.newSingleThreadExecutor().also { frameTapExecutor = it }
+        analysis.setAnalyzer(executor) { image ->
+            try {
+                CamerawesomeFrameTap.sink?.invoke(image)
+            } finally {
+                image.close()
+            }
+        }
+        return analysis
     }
 
     private fun getResolutionSelector(aspectRatio: Int): ResolutionSelector {
@@ -421,6 +459,9 @@ data class CameraXState(
 
     fun stop() {
         cameraProvider.unbindAll()
+        // FORK: release the CamerawesomeFrameTap thread.
+        frameTapExecutor?.shutdown()
+        frameTapExecutor = null
     }
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
